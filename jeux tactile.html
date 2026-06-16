@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Eco-Créateurs 3D Mobile</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #87CEEB; user-select: none; -webkit-user-select: none; touch-action: none; }
+        
+        /* Interface Utilisateur (HUD) */
+        #ui-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; z-index: 10; }
+        
+        /* En-tête */
+        #hud-top { padding: 10px; display: flex; justify-content: space-between; color: white; text-shadow: 1px 1px 2px black; font-weight: bold; pointer-events: none; }
+        .stat-box { background-color: rgba(0, 0, 0, 0.5); padding: 5px 15px; border-radius: 15px; display: flex; align-items: center; gap: 5px; font-size: 0.9rem; }
+
+        /* Barre d'outils (plus grosse pour tactile) */
+        #toolbar { padding: 10px; display: flex; justify-content: center; gap: 10px; background: rgba(0,0,0,0.2); pointer-events: auto; backdrop-filter: blur(5px); }
+        .tool-btn { width: 55px; height: 55px; background-color: rgba(255, 255, 255, 0.8); border: 2px solid #fff; border-radius: 10px; display: flex; justify-content: center; align-items: center; font-size: 1.5rem; cursor: pointer; transition: all 0.2s; }
+        .tool-btn.active { border-color: #FFD700; background-color: #fff; transform: scale(1.1); box-shadow: 0 0 10px #FFD700; }
+
+        /* --- ZONES TACTILES --- */
+        
+        /* Joystick Gauche */
+        #joystick-zone {
+            position: absolute; bottom: 100px; left: 30px; width: 120px; height: 120px;
+            background-color: rgba(255, 255, 255, 0.1); border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%; pointer-events: auto; touch-action: none;
+        }
+        #joystick-knob {
+            position: absolute; top: 50%; left: 50%; width: 50px; height: 50px;
+            background-color: rgba(255, 255, 255, 0.5); border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+
+        /* Bouton Action (Droite) */
+        #action-btn {
+            position: absolute; bottom: 100px; right: 30px; width: 80px; height: 80px;
+            background-color: rgba(255, 0, 0, 0.4); border: 3px solid rgba(255, 255, 255, 0.6);
+            border-radius: 50%; display: flex; justify-content: center; align-items: center;
+            font-size: 2rem; color: white; pointer-events: auto; touch-action: none;
+        }
+        #action-btn:active { background-color: rgba(255, 0, 0, 0.7); transform: scale(0.95); }
+
+        /* Zone de Regard (Invisible, prend la moitié droite) */
+        #look-zone {
+            position: absolute; top: 0; right: 0; width: 50%; height: 100%;
+            pointer-events: auto; touch-action: none; z-index: 5;
+        }
+
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 15px; height: 15px; border: 2px solid white; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; opacity: 0.7; }
+    </style>
+    
+    <!-- Librairies Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div id="hud-top">
+            <div class="stat-box"><span>🌟</span> <span id="score">0</span></div>
+            <div class="stat-box"><span>☁️</span> <span id="pollution">50%</span></div>
+        </div>
+        <div id="crosshair"></div>
+        <div id="toolbar">
+            <div class="tool-btn active" data-tool="clean">🧹</div>
+            <div class="tool-btn" data-tool="water">💧</div>
+            <div class="tool-btn" data-tool="seed">🌱</div>
+            <div class="tool-btn" data-tool="stone">🪨</div>
+        </div>
+    </div>
+
+    <!-- Contrôles Tactiles -->
+    <div id="joystick-zone"><div id="joystick-knob"></div></div>
+    <div id="look-zone"></div>
+    <div id="action-btn">👆</div>
+
+    <script>
+        // --- VARIABLES GLOBALES ---
+        let camera, scene, renderer;
+        let raycaster;
+        let prevTime = performance.now();
+        
+        // Contrôles
+        const moveState = { forward: 0, right: 0 }; // -1 à 1
+        const lookState = { active: false, lastX: 0, lastY: 0 };
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+
+        // État du jeu
+        let score = 0, pollutionLevel = 50, selectedTool = 'clean';
+        const objects = [], blockData = new Map();
+        
+        // --- DOM ---
+        const scoreEl = document.getElementById('score');
+        const pollutionEl = document.getElementById('pollution');
+        const toolbar = document.getElementById('toolbar');
+        const joystickKnob = document.getElementById('joystick-knob');
+
+        // --- MATÉRIAUX ---
+        const materials = {
+            grass: new THREE.MeshStandardMaterial({ color: 0x4CAF50 }),
+            water: new THREE.MeshStandardMaterial({ color: 0x2196F3, opacity: 0.8, transparent: true }),
+            pollution: new THREE.MeshStandardMaterial({ color: 0x555555 }),
+            seed: new THREE.MeshStandardMaterial({ color: 0x8BC34A }),
+            tree: new THREE.MeshStandardMaterial({ color: 0x2E7D32 }),
+            stone: new THREE.MeshStandardMaterial({ color: 0x9E9E9E })
+        };
+        const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+
+        // --- INITIALISATION ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 40);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Optimisation perfs
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // Lumières
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.8));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // Génération du monde
+            const groundSize = 15;
+            for (let x = -groundSize; x <= groundSize; x++) {
+                for (let z = -groundSize; z <= groundSize; z++) {
+                    let type = Math.random() < 0.2 ? 'pollution' : 'grass';
+                    createBlock(x, 0, z, type);
+                }
+            }
+
+            raycaster = new THREE.Raycaster();
+
+            // --- GESTION TACTILE ---
+            setupTouchControls();
+
+            // Événements Fenêtre
+            window.addEventListener('resize', onWindowResize);
+            
+            // Barre d'outils
+            toolbar.addEventListener('click', (e) => {
+                const btn = e.target.closest('.tool-btn');
+                if(btn) {
+                    selectedTool = btn.dataset.tool;
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        function createBlock(x, y, z, type) {
+            const block = new THREE.Mesh(boxGeometry, materials[type]);
+            let h = type === 'seed' ? 0.2 : 1;
+            block.position.set(x, y + h/2, z);
+            block.scale.y = h;
+            block.castShadow = true;
+            block.receiveShadow = true;
+            blockData.set(block.uuid, { type: type, age: 0, originalY: y + h/2 });
+            scene.add(block);
+            objects.push(block);
+        }
+
+        // --- LOGIQUE TACTILE ---
+        function setupTouchControls() {
+            const joystickZone = document.getElementById('joystick-zone');
+            const lookZone = document.getElementById('look-zone');
+            const actionBtn = document.getElementById('action-btn');
+            let joystickOrigin = { x: 0, y: 0 };
+            let joystickTouchId = null;
+            let lookTouchId = null;
+
+            // 1. Joystick (Déplacement)
+            joystickZone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.changedTouches[0];
+                joystickTouchId = touch.identifier;
+                const rect = joystickZone.getBoundingClientRect();
+                joystickOrigin = { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
+                updateJoystick(touch.clientX, touch.clientY);
+            }, { passive: false });
+
+            joystickZone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === joystickTouchId) {
+                        updateJoystick(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
+                        break;
+                    }
+                }
+            }, { passive: false });
+
+            const endJoystick = (e) => {
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === joystickTouchId) {
+                        joystickTouchId = null;
+                        moveState.forward = 0;
+                        moveState.right = 0;
+                        joystickKnob.style.transform = `translate(-50%, -50%)`; // Reset visuel
+                        break;
+                    }
+                }
+            };
+            joystickZone.addEventListener('touchend', endJoystick);
+            joystickZone.addEventListener('touchcancel', endJoystick);
+
+            function updateJoystick(x, y) {
+                const maxDist = 40; // Rayon max du joystick
+                let dx = x - joystickOrigin.x;
+                let dy = y - joystickOrigin.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                
+                // Limiter le mouvement visuel
+                if (distance > maxDist) {
+                    const ratio = maxDist / distance;
+                    dx *= ratio;
+                    dy *= ratio;
+                }
+
+                joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+
+                // Normaliser -1 à 1 pour le jeu
+                moveState.right = dx / maxDist;
+                moveState.forward = -dy / maxDist; // Inversé car Y écran descend vers le bas
+            }
+
+            // 2. Zone de Regard (Caméra)
+            lookZone.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.changedTouches[0];
+                lookTouchId = touch.identifier;
+                lookState.active = true;
+                lookState.lastX = touch.clientX;
+                lookState.lastY = touch.clientY;
+            }, { passive: false });
+
+            lookZone.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === lookTouchId) {
+                        const touch = e.changedTouches[i];
+                        const deltaX = touch.clientX - lookState.lastX;
+                        const deltaY = touch.clientY - lookState.lastY;
+                        
+                        // Rotation Caméra
+                        const sensitivity = 0.005;
+                        camera.rotation.y -= deltaX * sensitivity; // Yaw (Gauche/Droite)
+                        
+                        // Pitch (Haut/Bas) - Limité pour ne pas faire des loopings
+                        const currentPitch = camera.rotation.x;
+                        const targetPitch = currentPitch - deltaY * sensitivity;
+                        camera.rotation.x = Math.max(-Math.PI/3, Math.min(Math.PI/3, targetPitch));
+
+                        lookState.lastX = touch.clientX;
+                        lookState.lastY = touch.clientY;
+                        break;
+                    }
+                }
+            }, { passive: false });
+
+            const endLook = (e) => {
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === lookTouchId) {
+                        lookTouchId = null;
+                        lookState.active = false;
+                        break;
+                    }
+                }
+            };
+            lookZone.addEventListener('touchend', endLook);
+            lookZone.addEventListener('touchcancel', endLook);
+
+            // 3. Bouton Action
+            actionBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                performAction();
+            }, { passive: false });
+        }
+
+        function performAction() {
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(objects);
+            if (intersects.length > 0 && intersects[0].distance < 8) {
+                const target = intersects[0].object;
+                const data = blockData.get(target.uuid);
+                if (!data) return;
+
+                if (selectedTool === 'clean' && data.type === 'pollution') {
+                    updateBlock(target, 'grass');
+                    score += 5; pollutionLevel -= 2; updateHUD();
+                } else if (selectedTool === 'water' && data.type === 'grass') {
+                    updateBlock(target, 'water');
+                } else if (selectedTool === 'seed' && (data.type === 'grass' || data.type === 'water')) {
+                    createBlock(Math.round(target.position.x), Math.round(target.position.y), Math.round(target.position.z), 'seed');
+                } else if (selectedTool === 'stone' && data.type === 'grass') {
+                    updateBlock(target, 'stone');
+                }
+            }
+        }
+
+        function updateBlock(block, type) {
+            let h = type === 'seed' ? 0.2 : 1;
+            block.material = materials[type];
+            block.scale.y = h;
+            block.position.y = Math.round(block.position.y) + h/2;
+            blockData.set(block.uuid, { ...blockData.get(block.uuid), type: type, age: 0 });
+        }
+
+        function updateHUD() {
+            scoreEl.innerText = score;
+            pollutionEl.innerText = Math.max(0, pollutionLevel) + '%';
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- BOUCLE DE RENDU ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            // Mouvement basé sur le Joystick
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+
+            // Calculer la direction avant et droite relative à la caméra
+            const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            forwardVector.y = 0; forwardVector.normalize();
+            
+            const rightVector = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            rightVector.y = 0; rightVector.normalize();
+
+            // Appliquer l'input joystick
+            if (Math.abs(moveState.forward) > 0.1) velocity.z -= moveState.forward * 100.0 * delta; // Simplifié pour demo
+            if (Math.abs(moveState.right) > 0.1) velocity.x -= moveState.right * 100.0 * delta;
+
+            // Déplacement effectif (déplace l'objet caméra)
+            // Note: controls.moveRight n'existe plus, on le fait à la main
+            // On combine les vecteurs direction avec la vitesse calculée
+            
+            // Vitesse de déplacement
+            const speed = 10.0;
+            
+            // Avancer / Reculer
+            if (moveState.forward !== 0) {
+                camera.position.addScaledVector(forwardVector, moveState.forward * speed * delta);
+            }
+            // Gauche / Droite
+            if (moveState.right !== 0) {
+                camera.position.addScaledVector(rightVector, moveState.right * speed * delta);
+            }
+            
+            // Hauteur fixe (saut/gravité simplifié)
+            camera.position.y = 1.6;
+
+            // Logique Monde (croissance)
+            objects.forEach(obj => {
+                const d = blockData.get(obj.uuid);
+                if (d.type === 'water') obj.position.y = d.originalY + Math.sin(time * 0.003) * 0.1;
+                if (d.type === 'seed') {
+                    d.age += delta;
+                    if (d.age > 3) {
+                        updateBlock(obj, 'tree');
+                        score += 10; updateHUD();
+                    }
+                }
+            });
+
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>
