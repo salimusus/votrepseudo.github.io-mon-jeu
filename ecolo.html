@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Eco-Créateurs 3D (Version Simplifiée)</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #87CEEB; user-select: none; }
+        
+        #ui-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; }
+        
+        #hud-top { padding: 20px; display: flex; justify-content: space-between; color: white; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); font-weight: bold; font-size: 1.2rem; }
+        .stat-box { background-color: rgba(0, 0, 0, 0.5); padding: 10px 20px; border-radius: 20px; display: flex; align-items: center; gap: 10px; }
+        
+        #toolbar { padding: 20px; display: flex; justify-content: center; gap: 15px; pointer-events: auto; }
+        .tool-btn { width: 60px; height: 60px; background-color: rgba(255, 255, 255, 0.9); border: 3px solid #ddd; border-radius: 10px; display: flex; justify-content: center; align-items: center; font-size: 2rem; cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .tool-btn.active { border-color: #4CAF50; background-color: #fff; transform: translateY(-5px); box-shadow: 0 0 15px #4CAF50; }
+        
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.8); color: white; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 100; pointer-events: auto; }
+        #start-btn { margin-top: 2rem; padding: 1rem 3rem; font-size: 1.5rem; background-color: #4CAF50; color: white; border: none; border-radius: 30px; cursor: pointer; }
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; border: 2px solid rgba(255, 255, 255, 0.8); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+    </style>
+    
+    <!-- IMPORTATION DES LIBRAIRIES THREE.JS (VERSION CLASSIQUE) -->
+    <!-- On utilise une version stable (r128) qui est compatible avec le chargement direct -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div id="hud-top">
+            <div class="stat-box"><span>🌟 Score :</span><span id="score">0</span></div>
+            <div class="stat-box"><span>☁️ Pollution :</span><span id="pollution">50%</span></div>
+        </div>
+        <div id="crosshair"></div>
+        <div id="toolbar">
+            <div class="tool-btn active" data-tool="clean" title="Nettoyer (1)">🧹</div>
+            <div class="tool-btn" data-tool="water" title="Eau (2)">💧</div>
+            <div class="tool-btn" data-tool="seed" title="Planter (3)">🌱</div>
+            <div class="tool-btn" data-tool="stone" title="Pierre (4)">🪨</div>
+        </div>
+    </div>
+
+    <div id="overlay">
+        <h1>Eco-Créateurs 3D</h1>
+        <p>Cliquez sur "Commencer" pour jouer.<br>ZQSD pour bouger, Souris pour regarder.</p>
+        <button id="start-btn">Commencer</button>
+    </div>
+
+    <script>
+        // --- VARIABLES GLOBALES ---
+        let camera, scene, renderer, controls;
+        let raycaster, moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+        let prevTime = performance.now();
+        const velocity = new THREE.Vector3(), direction = new THREE.Vector3();
+        
+        let score = 0, pollutionLevel = 50, selectedTool = 'clean';
+        const objects = [], blockData = new Map();
+        
+        // --- DOM ELEMENTS ---
+        const scoreEl = document.getElementById('score');
+        const pollutionEl = document.getElementById('pollution');
+        const startBtn = document.getElementById('start-btn');
+        const toolbar = document.getElementById('toolbar');
+
+        // --- MATÉRIAUX ---
+        const materials = {
+            grass: new THREE.MeshStandardMaterial({ color: 0x4CAF50 }),
+            water: new THREE.MeshStandardMaterial({ color: 0x2196F3, opacity: 0.8, transparent: true }),
+            pollution: new THREE.MeshStandardMaterial({ color: 0x555555 }),
+            seed: new THREE.MeshStandardMaterial({ color: 0x8BC34A }),
+            tree: new THREE.MeshStandardMaterial({ color: 0x2E7D32 }),
+            stone: new THREE.MeshStandardMaterial({ color: 0x9E9E9E })
+        };
+        const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+        const highlightBox = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.05, 1.05), new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.3, transparent: true, wireframe: true }));
+
+        // --- INITIALISATION ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 40);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // Lumières
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // Contrôles (Attention: syntaxe classique pour THREE.PointerLockControls)
+            controls = new THREE.PointerLockControls(camera, document.body);
+
+            startBtn.addEventListener('click', () => controls.lock());
+            
+            controls.addEventListener('lock', () => document.getElementById('overlay').style.display = 'none');
+            controls.addEventListener('unlock', () => document.getElementById('overlay').style.display = 'flex');
+
+            scene.add(controls.getObject());
+
+            // Génération du sol
+            const groundSize = 15;
+            for (let x = -groundSize; x <= groundSize; x++) {
+                for (let z = -groundSize; z <= groundSize; z++) {
+                    let type = Math.random() < 0.2 ? 'pollution' : 'grass';
+                    createBlock(x, 0, z, type);
+                }
+            }
+            scene.add(highlightBox);
+
+            raycaster = new THREE.Raycaster();
+
+            // Événements
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            document.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('resize', onWindowResize);
+            
+            toolbar.addEventListener('click', (e) => {
+                const btn = e.target.closest('.tool-btn');
+                if(btn) {
+                    selectedTool = btn.dataset.tool;
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        function createBlock(x, y, z, type) {
+            const block = new THREE.Mesh(boxGeometry, materials[type]);
+            let h = type === 'seed' ? 0.2 : 1;
+            block.position.set(x, y + h/2, z);
+            block.scale.y = h;
+            block.castShadow = true;
+            block.receiveShadow = true;
+            blockData.set(block.uuid, { type: type, age: 0, originalY: y + h/2 });
+            scene.add(block);
+            objects.push(block);
+        }
+
+        // --- LOGIQUE DE JEU ---
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                case 'ArrowRight': case 'KeyD': moveRight = true; break;
+                case 'Digit1': selectTool('clean'); break;
+                case 'Digit2': selectTool('water'); break;
+                case 'Digit3': selectTool('seed'); break;
+                case 'Digit4': selectTool('stone'); break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            }
+        }
+
+        function selectTool(t) {
+            selectedTool = t;
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`.tool-btn[data-tool="${t}"]`).classList.add('active');
+        }
+
+        function onMouseDown() {
+            if (!controls.isLocked) return;
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(objects);
+            if (intersects.length > 0 && intersects[0].distance < 8) {
+                const target = intersects[0].object;
+                const data = blockData.get(target.uuid);
+                if (!data) return;
+
+                if (selectedTool === 'clean' && data.type === 'pollution') {
+                    updateBlock(target, 'grass');
+                    score += 5; pollutionLevel -= 2; updateHUD();
+                } else if (selectedTool === 'water' && data.type === 'grass') {
+                    updateBlock(target, 'water');
+                } else if (selectedTool === 'seed' && (data.type === 'grass' || data.type === 'water')) {
+                    createBlock(Math.round(target.position.x), Math.round(target.position.y), Math.round(target.position.z), 'seed');
+                } else if (selectedTool === 'stone' && data.type === 'grass') {
+                    updateBlock(target, 'stone');
+                }
+            }
+        }
+
+        function updateBlock(block, type) {
+            let h = type === 'seed' ? 0.2 : 1;
+            block.material = materials[type];
+            block.scale.y = h;
+            block.position.y = Math.round(block.position.y) + h/2;
+            blockData.set(block.uuid, { ...blockData.get(block.uuid), type: type, age: 0 });
+        }
+
+        function updateHUD() {
+            scoreEl.innerText = score;
+            pollutionEl.innerText = Math.max(0, pollutionLevel) + '%';
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- BOUCLE DE RENDU ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+
+            if (controls.isLocked) {
+                // Mouvement
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+                if (moveForward || moveBackward) velocity.z -= direction.z * 100.0 * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * 100.0 * delta;
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+                controls.getObject().position.y = 1.6;
+
+                // Surbrillance
+                raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+                const intersects = raycaster.intersectObjects(objects);
+                if (intersects.length > 0 && intersects[0].distance < 8) {
+                    highlightBox.position.copy(intersects[0].object.position);
+                    highlightBox.scale.copy(intersects[0].object.scale);
+                    highlightBox.visible = true;
+                } else { highlightBox.visible = false; }
+            } else { highlightBox.visible = false; }
+
+            // Logique monde
+            objects.forEach(obj => {
+                const d = blockData.get(obj.uuid);
+                if (d.type === 'water') obj.position.y = d.originalY + Math.sin(time * 0.003) * 0.1;
+                if (d.type === 'seed') {
+                    d.age += delta;
+                    if (d.age > 3) {
+                        updateBlock(obj, 'tree');
+                        score += 10; updateHUD();
+                    }
+                }
+            });
+
+            prevTime = time;
+            renderer.render(scene, camera);
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>
