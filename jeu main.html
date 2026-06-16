@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Eco-Créateurs 3D: Combat & Construction</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #87CEEB; user-select: none; -webkit-user-select: none; touch-action: none; }
+        
+        #ui-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; z-index: 10; }
+        
+        /* En-tête avec Vie et Score */
+        #hud-top { padding: 10px; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+        
+        .bar-container { width: 200px; height: 20px; background: rgba(0,0,0,0.5); border-radius: 10px; overflow: hidden; border: 2px solid white; }
+        .hp-bar { width: 100%; height: 100%; background: linear-gradient(90deg, #ff5252, #d32f2f); transition: width 0.2s; }
+        .xp-bar { width: 0%; height: 5px; background: #FFD700; margin-top: 2px; border-radius: 2px; transition: width 0.2s; }
+
+        .score-box { background: rgba(0,0,0,0.6); padding: 5px 15px; border-radius: 20px; color: white; font-weight: bold; font-size: 1.1rem; display: flex; align-items: center; gap: 5px; }
+
+        /* Barre d'outils */
+        #toolbar { padding: 5px; display: flex; justify-content: center; gap: 5px; background: rgba(0,0,0,0.3); pointer-events: auto; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; }
+        .tool-btn { width: 50px; height: 50px; min-width: 50px; background-color: rgba(255, 255, 255, 0.8); border: 2px solid #fff; border-radius: 8px; display: flex; justify-content: center; align-items: center; font-size: 1.4rem; }
+        .tool-btn.active { border-color: #FFD700; transform: scale(1.1); background: #fff; }
+
+        /* Contrôles Tactiles */
+        #joystick-zone { position: absolute; bottom: 110px; left: 30px; width: 120px; height: 120px; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; pointer-events: auto; touch-action: none; }
+        #joystick-knob { position: absolute; top: 50%; left: 50%; width: 50px; height: 50px; background: rgba(255,255,255,0.5); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+
+        #action-btn { position: absolute; bottom: 110px; right: 30px; width: 80px; height: 80px; background: rgba(255, 0, 0, 0.4); border: 3px solid rgba(255, 255, 255, 0.6); border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 2rem; color: white; pointer-events: auto; touch-action: none; }
+        #action-btn:active { background: rgba(255, 0, 0, 0.7); transform: scale(0.95); }
+
+        #look-zone { position: absolute; top: 0; right: 0; width: 50%; height: 100%; pointer-events: auto; touch-action: none; z-index: 5; }
+        
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 15px; height: 15px; border: 2px solid white; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; opacity: 0.8; }
+
+        /* Game Over Screen */
+        #game-over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); color: white; display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100; pointer-events: auto; }
+        #game-over h1 { color: #ff5252; font-size: 3rem; margin-bottom: 10px; }
+        #restart-btn { padding: 15px 30px; font-size: 1.5rem; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 20px; }
+
+        /* Dégâts flottants */
+        .damage-text { position: absolute; color: red; font-weight: bold; font-size: 1.2rem; pointer-events: none; text-shadow: 1px 1px 0 black; animation: floatUp 1s forwards; }
+        @keyframes floatUp { to { transform: translateY(-50px); opacity: 0; } }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div id="hud-top">
+            <div class="bar-container">
+                <div class="hp-bar" id="hp-bar"></div>
+            </div>
+            <div class="score-box">🌟 <span id="score">0</span></div>
+        </div>
+        
+        <div id="crosshair"></div>
+        
+        <div id="toolbar">
+            <div class="tool-btn active" data-tool="clean">🧹</div>
+            <div class="tool-btn" data-tool="water">💧</div>
+            <div class="tool-btn" data-tool="seed">🌱</div>
+            <div class="tool-btn" data-tool="wood">🪵</div>
+            <div class="tool-btn" data-tool="stone">🪨</div>
+            <div class="tool-btn" data-tool="sword">⚔️</div>
+        </div>
+    </div>
+
+    <div id="joystick-zone"><div id="joystick-knob"></div></div>
+    <div id="look-zone"></div>
+    <div id="action-btn">👆</div>
+
+    <div id="game-over">
+        <h1>GAME OVER</h1>
+        <p>Les monstres ont détruit votre monde.</p>
+        <p>Score Final : <span id="final-score">0</span></p>
+        <button id="restart-btn" onclick="location.reload()">Rejouer</button>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        let camera, scene, renderer, raycaster;
+        let playerHP = 100;
+        let score = 0;
+        let selectedTool = 'clean';
+        const objects = [];
+        const enemies = [];
+        const blockData = new Map();
+
+        // Contrôles
+        const moveState = { forward: 0, right: 0 };
+        const lookState = { active: false, lastX: 0, lastY: 0 };
+        let selectionBox; // Pour voir sur quoi on vise
+
+        // Matériaux
+        const materials = {
+            grass: new THREE.MeshStandardMaterial({ color: 0x4CAF50 }),
+            dirt: new THREE.MeshStandardMaterial({ color: 0x795548 }),
+            water: new THREE.MeshStandardMaterial({ color: 0x2196F3, opacity: 0.7, transparent: true }),
+            pollution: new THREE.MeshStandardMaterial({ color: 0x616161 }),
+            seed: new THREE.MeshStandardMaterial({ color: 0x8BC34A }),
+            tree: new THREE.MeshStandardMaterial({ color: 0x2E7D32 }),
+            wood: new THREE.MeshStandardMaterial({ color: 0x5D4037 }),
+            stone: new THREE.MeshStandardMaterial({ color: 0x757575 }),
+            enemy: new THREE.MeshStandardMaterial({ color: 0xD32F2F }) // Rouge pour les monstres
+        };
+
+        const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+
+        function init() {
+            // Scène
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 40);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.6, 5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // Lumières
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.8));
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            dirLight.shadow.camera.left = -30; dirLight.shadow.camera.right = 30;
+            dirLight.shadow.camera.top = 30; dirLight.shadow.camera.bottom = -30;
+            scene.add(dirLight);
+
+            // Boîte de sélection (Wireframe)
+            selectionBox = new THREE.BoxHelper(new THREE.Mesh(boxGeometry), 0xffffff);
+            selectionBox.visible = false;
+            scene.add(selectionBox);
+
+            // Création du monde
+            createWorld();
+
+            // Monstres
+            spawnEnemyLoop();
+
+            // Événements
+            setupTouchControls();
+            setupToolbar();
+            window.addEventListener('resize', onWindowResize);
+
+            animate();
+        }
+
+        function createWorld() {
+            const groundSize = 15;
+            for (let x = -groundSize; x <= groundSize; x++) {
+                for (let z = -groundSize; z <= groundSize; z++) {
+                    let type = Math.random() < 0.15 ? 'pollution' : 'grass';
+                    createBlock(x, 0, z, type);
+                }
+            }
+        }
+
+        function createBlock(x, y, z, type) {
+            const block = new THREE.Mesh(boxGeometry, materials[type]);
+            block.position.set(Math.round(x), Math.round(y), Math.round(z));
+            block.castShadow = true;
+            block.receiveShadow = true;
+            block.name = type; // Pour identifier le type facilement
+            
+            blockData.set(block.uuid, { type: type, hp: 10, age: 0, originalY: block.position.y });
+            
+            scene.add(block);
+            objects.push(block);
+            return block;
+        }
+
+        // --- LOGIQUE INTERACTION ---
+
+        function performAction() {
+            // Raycaster au centre de l'écran
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            
+            // Cherche les blocs ET les ennemis
+            const targets = [...objects, ...enemies];
+            const intersects = raycaster.intersectObjects(targets);
+
+            if (intersects.length > 0 && intersects[0].distance < 6) { // Portée d'action
+                const intersect = intersects[0];
+                const target = intersect.object;
+
+                // 1. COMBAT : Si on vise un ennemi avec l'épée
+                if (target.name === 'enemy' && selectedTool === 'sword') {
+                    hitEnemy(target);
+                    return;
+                }
+
+                // 2. INTERACTION BLOCS
+                if (target.name !== 'enemy') {
+                    const data = blockData.get(target.uuid);
+                    
+                    // CONSTRUCTION : Bois ou Pierre (Place le bloc ADJACENT)
+                    if (selectedTool === 'wood' || selectedTool === 'stone') {
+                        const normal = intersect.face.normal;
+                        // Position du nouveau bloc = Position bloc touché + Direction de la face
+                        const newPos = target.position.clone().add(normal);
+                        
+                        // Vérifier si l'espace est vide
+                        if (!isPositionOccupied(newPos)) {
+                            createBlock(newPos.x, newPos.y, newPos.z, selectedTool);
+                        }
+                    }
+                    
+                    // AUTRES OUTILS (Modifient le bloc existant)
+                    else if (selectedTool === 'clean' && data.type === 'pollution') {
+                        replaceBlock(target, 'grass');
+                    } else if (selectedTool === 'water' && data.type === 'grass') {
+                        replaceBlock(target, 'water');
+                    } else if (selectedTool === 'seed' && (data.type === 'grass' || data.type === 'water' || data.type === 'dirt')) {
+                        // On crée un bloc graine AU DESSUS
+                        if (!isPositionOccupied(target.position.clone().add(new THREE.Vector3(0,1,0)))) {
+                            createBlock(target.position.x, target.position.y + 1, target.position.z, 'seed');
+                        }
+                    }
+                }
+            }
+        }
+
+        function replaceBlock(block, newType) {
+            const oldData = blockData.get(block.uuid);
+            block.material = materials[newType];
+            block.name = newType;
+            blockData.set(block.uuid, { ...oldData, type: newType, age: 0 });
+            
+            if (newType === 'grass') {
+                score += 5;
+                updateScore();
+            }
+        }
+
+        function isPositionOccupied(pos) {
+            // Vérifie si un bloc existe déjà à cette position (avec marge d'erreur)
+            return objects.some(obj => obj.position.distanceTo(pos) < 0.1);
+        }
+
+        // --- LOGIQUE MONSTRES ---
+
+        class Enemy {
+            constructor() {
+                this.mesh = new THREE.Mesh(boxGeometry, materials.enemy);
+                this.mesh.name = 'enemy';
+                
+                // Spawn aléatoire loin du joueur
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 20 + Math.random() * 10;
+                this.mesh.position.set(
+                    camera.position.x + Math.cos(angle) * dist,
+                    1, // Au sol
+                    camera.position.z + Math.sin(angle) * dist
+                );
+                
+                this.hp = 30;
+                this.speed = 2.5; // Vitesse du monstre
+                scene.add(this.mesh);
+                enemies.push(this.mesh);
+            }
+
+            update(delta) {
+                // IA Simple : Regarder le joueur et avancer
+                this.mesh.lookAt(camera.position.x, 1, camera.position.z);
+                const dir = new THREE.Vector3();
+                dir.subVectors(camera.position, this.mesh.position).normalize();
+                
+                // Déplacement
+                this.mesh.position.add(dir.multiplyScalar(this.speed * delta));
+
+                // Collision avec le joueur (Dégâts)
+                if (this.mesh.position.distanceTo(camera.position) < 1.5) {
+                    takeDamage(10);
+                    // Reculer le monstre pour éviter "coller"
+                    this.mesh.position.sub(dir.multiplyScalar(2));
+                }
+
+                // Collision avec les blocs (Détruire les plantes)
+                objects.forEach(block => {
+                    if (block.name === 'seed' || block.name === 'tree') {
+                        if (this.mesh.position.distanceTo(block.position) < 1.5) {
+                            scene.remove(block); // Détruire la plante
+                            objects.splice(objects.indexOf(block), 1);
+                            blockData.delete(block.uuid);
+                        }
+                    }
+                });
+            }
+        }
+
+        function hitEnemy(mesh) {
+            mesh.hp -= 15;
+            mesh.scale.set(1.2, 1.2, 1.2); // Effet visuel de coup
+            setTimeout(() => mesh.scale.set(1,1,1), 100);
+
+            // Afficher dégâts
+            showDamage(mesh.position, "-15");
+
+            if (mesh.hp <= 0) {
+                scene.remove(mesh);
+                enemies.splice(enemies.indexOf(mesh), 1);
+                score += 20;
+                updateScore();
+            }
+        }
+
+        function takeDamage(amount) {
+            playerHP -= amount;
+            document.getElementById('hp-bar').style.width = playerHP + '%';
+            
+            // Effet visuel écran rouge
+            document.body.style.backgroundColor = '#ffcccc';
+            setTimeout(() => document.body.style.backgroundColor = '#87CEEB', 100);
+
+            if (playerHP <= 0) {
+                document.getElementById('game-over').style.display = 'flex';
+                document.getElementById('final-score').innerText = score;
+            }
+        }
+
+        function spawnEnemyLoop() {
+            setInterval(() => {
+                if (playerHP > 0) {
+                    new Enemy();
+                }
+            }, 5000); // Un monstre toutes les 5 secondes
+        }
+
+        function showDamage(pos, text) {
+            const div = document.createElement('div');
+            div.className = 'damage-text';
+            div.innerText = text;
+            
+            // Convertir position 3D en 2D écran (approximatif pour la démo)
+            const vec = pos.clone();
+            vec.project(camera);
+            const x = (vec.x * .5 + .5) * window.innerWidth;
+            const y = (-(vec.y * .5) + .5) * window.innerHeight;
+            
+            div.style.left = x + 'px';
+            div.style.top = y + 'px';
+            document.body.appendChild(div);
+            setTimeout(() => div.remove(), 1000);
+        }
+
+        // --- CONTRÔLES TACTILES (Identiques à avant) ---
+        function setupTouchControls() {
+            const joystickZone = document.getElementById('joystick-zone');
+            const lookZone = document.getElementById('look-zone');
+            const actionBtn = document.getElementById('action-btn');
+            const joystickKnob = document.getElementById('joystick-knob');
+            
+            let joystickTouchId = null, lookTouchId = null;
+            let joystickOrigin = { x:0, y:0 };
+
+            // Joystick
+            joystickZone.addEventListener('touchstart', e => {
+                e.preventDefault();
+                const touch = e.changedTouches[0];
+                joystickTouchId = touch.identifier;
+                const rect = joystickZone.getBoundingClientRect();
+                joystickOrigin = { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
+                updateJoystick(touch.clientX, touch.clientY);
+            }, {passive: false});
+
+            joystickZone.addEventListener('touchmove', e => {
+                e.preventDefault();
+                for (let i=0; i<e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === joystickTouchId) {
+                        updateJoystick(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
+                    }
+                }
+            }, {passive: false});
+
+            const endJoystick = e => {
+                for (let i=0; i<e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === joystickTouchId) {
+                        joystickTouchId = null;
+                        moveState.forward = 0; moveState.right = 0;
+                        joystickKnob.style.transform = `translate(-50%, -50%)`;
+                    }
+                }
+            };
+            joystickZone.addEventListener('touchend', endJoystick);
+            joystickZone.addEventListener('touchcancel', endJoystick);
+
+            function updateJoystick(x, y) {
+                const maxDist = 40;
+                let dx = x - joystickOrigin.x;
+                let dy = y - joystickOrigin.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                if (dist > maxDist) { const r = maxDist/dist; dx*=r; dy*=r; }
+                joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+                moveState.right = dx / maxDist;
+                moveState.forward = -dy / maxDist;
+            }
+
+            // Look Zone
+            lookZone.addEventListener('touchstart', e => {
+                e.preventDefault();
+                const touch = e.changedTouches[0];
+                lookTouchId = touch.identifier;
+                lookState.active = true;
+                lookState.lastX = touch.clientX;
+                lookState.lastY = touch.clientY;
+            }, {passive: false});
+
+            lookZone.addEventListener('touchmove', e => {
+                e.preventDefault();
+                for (let i=0; i<e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier === lookTouchId) {
+                        const dx = e.changedTouches[i].clientX - lookState.lastX;
+                        const dy = e.changedTouches[i].clientY - lookState.lastY;
+                        camera.rotation.y -= dx * 0.005;
+                        const p = camera.rotation.x - dy * 0.005;
+                        camera.rotation.x = Math.max(-Math.PI/3, Math.min(Math.PI/3, p));
+                        lookState.lastX = e.changedTouches[i].clientX;
+                        lookState.lastY = e.changedTouches[i].clientY;
+                    }
+                }
+            }, {passive: false});
+            
+            // Nettoyage look
+            const endLook = e => {
+                for (let i=0; i<e.changedTouches.length; i++) if(e.changedTouches[i].identifier === lookTouchId) lookTouchId = null;
+            };
+            lookZone.addEventListener('touchend', endLook);
+            lookZone.addEventListener('touchcancel', endLook);
+
+            // Action
+            actionBtn.addEventListener('touchstart', e => {
+                e.preventDefault();
+                performAction();
+            }, {passive: false});
+        }
+
+        function setupToolbar() {
+            const toolbar = document.getElementById('toolbar');
+            toolbar.addEventListener('click', e => {
+                const btn = e.target.closest('.tool-btn');
+                if(btn) {
+                    selectedTool = btn.dataset.tool;
+                    document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                }
+            });
+        }
+
+        function updateScore() {
+            document.getElementById('score').innerText = score;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- BOUCLE DE JEU ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = 0.016; // Fixe pour simplifier (environ 60fps)
+
+            if (playerHP <= 0) return;
+
+            // Mouvement Joueur
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            forward.y = 0; forward.normalize();
+            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            right.y = 0; right.normalize();
+            
+            camera.position.addScaledVector(forward, moveState.forward * 5 * delta);
+            camera.position.addScaledVector(right, moveState.right * 5 * delta);
+            camera.position.y = 1.6;
+
+            // Update Sélection (Le cadre blanc)
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(objects);
+            if (intersects.length > 0 && intersects[0].distance < 6) {
+                selectionBox.visible = true;
+                selectionBox.position.copy(intersects[0].object.position);
+                selectionBox.scale.copy(intersects[0].object.scale);
+            } else {
+                selectionBox.visible = false;
+            }
+
+            // Update Monstres
+            enemies.forEach(e => {
+                // On recrée l'instanceEnemy virtuellement ou on stocke la classe dans userData
+                // Simplification : On fait la logique ici
+                e.lookAt(camera.position.x, 1, camera.position.z);
+                const dir = new THREE.Vector3().subVectors(camera.position, e.position).normalize();
+                e.position.add(dir.multiplyScalar(2.5 * delta));
+                
+                if (e.position.distanceTo(camera.position) < 1.5) takeDamage(10);
+            });
+
+            // Update Plantes
+            const time = performance.now();
+            objects.forEach(obj => {
+                const d = blockData.get(obj.uuid);
+                if (d.type === 'water') obj.position.y = d.originalY + Math.sin(time * 0.003) * 0.1;
+                if (d.type === 'seed') {
+                    d.age += delta;
+                    if (d.age > 3) replaceBlock(obj, 'tree');
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
